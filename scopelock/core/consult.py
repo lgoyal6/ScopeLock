@@ -10,6 +10,14 @@ _QUEUED_VERBS: dict[str, str] = {}
 HOLDING_LINE_EN = "One moment, I'm going to confirm that with her."
 HOLDING_LINE_ES = "Un momento, voy a preguntarle eso a ella directamente."
 
+# Explicit lifecycle. pending is the only non-terminal state; every transition out of it is
+# a single conditional UPDATE, so two callbacks racing for the same request cannot both win.
+DECISION_STATES = ("pending", "resolved", "cancelled", "abandoned")
+
+
+class DecisionNotPending(ValueError):
+    """The request was already resolved, cancelled (revocation, expiry, restart) or abandoned."""
+
 
 def request_holder_decision(case_id: str, verb: str, question_en: str,
                             question_es: str) -> str:
@@ -18,22 +26,65 @@ def request_holder_decision(case_id: str, verb: str, question_en: str,
 
     decision_id = db.new_id("dec")
     conn = db.connect()
-    conn.execute(
-        "INSERT INTO decision_request (id, case_id, verb, question_en, question_es, "
-        "answer_es, answer_en, status, decided_by, latency_ms, created_at, resolved_at) "
-        "VALUES (?, ?, ?, ?, ?, NULL, NULL, 'pending', NULL, NULL, ?, NULL)",
-        (
-            decision_id,
-            case_id,
-            verb,
-            db.redact(question_en),
-            db.redact(question_es),
-            db.now(),
-        ),
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        seq = db.next_seq(conn, case_id, "decision_requested")
+        conn.execute(
+            "INSERT INTO decision_request (id, case_id, verb, question_en, question_es, "
+            "answer_es, answer_en, status, decided_by, latency_ms, created_at, resolved_at, "
+            "cancel_reason, created_seq) "
+            "VALUES (?, ?, ?, ?, ?, NULL, NULL, 'pending', NULL, NULL, ?, NULL, NULL, ?)",
+            (
+                decision_id,
+                case_id,
+                verb,
+                db.redact(question_en),
+                db.redact(question_es),
+                db.now(),
+                seq,
+            ),
+        )
+        conn.execute(
+            "UPDATE kase SET state = 'consulting_holder' WHERE id = ? "
+            "AND state NOT IN ('closed', 'interrupted')",
+            (case_id,),
+        )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    return decision_id
+
+
+def cancel_holder_decision(decision_id: str, reason: str) -> bool:
+    """Close a pending request without an answer. Returns False if it was not pending."""
+    conn = db.connect()
+    cursor = conn.execute(
+        "UPDATE decision_request SET status = 'cancelled', cancel_reason = ?, resolved_at = ? "
+        "WHERE id = ? AND status = 'pending'",
+        (db.redact(reason), db.now(), decision_id),
     )
     conn.commit()
-    db.set_case_state(case_id, "consulting_holder")
-    return decision_id
+    return cursor.rowcount == 1
+
+
+def recover_after_restart() -> int:
+    """Cancel requests left pending by a process that died.
+
+    The live call that asked the question is gone with the process, so nobody can answer
+    it; cancelling (never resolving) keeps the holder's decision unmanufactured. Run only
+    from the process that owns live calls, before it starts listening.
+    """
+    PENDING.clear()
+    _QUEUED_VERBS.clear()
+    conn = db.connect()
+    cursor = conn.execute(
+        "UPDATE decision_request SET status = 'cancelled', cancel_reason = 'restart', "
+        "resolved_at = ? WHERE status = 'pending'",
+        (db.now(),),
+    )
+    conn.commit()
+    return cursor.rowcount
 
 
 def resolve_holder_decision(decision_id: str, answer_es: str, answer_en: str,
@@ -42,28 +93,53 @@ def resolve_holder_decision(decision_id: str, answer_es: str, answer_en: str,
         raise ValueError("latency_ms must be non-negative")
 
     conn = db.connect()
-    row = conn.execute(
-        "SELECT case_id, status FROM decision_request WHERE id = ?", (decision_id,)
-    ).fetchone()
-    if row is None:
-        raise KeyError(f"unknown decision request: {decision_id}")
-    if row["status"] != "pending":
-        raise ValueError(f"decision request {decision_id} is already {row['status']}")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute(
+            "SELECT case_id, status FROM decision_request WHERE id = ?", (decision_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError("unknown decision request")
+        if row["status"] == "pending" and db.mandate_version_status(
+            row["case_id"], conn
+        ) in ("revoked", "expired"):
+            # Expiry is evaluated lazily: the first callback after it closes the request.
+            conn.execute(
+                "UPDATE decision_request SET status = 'cancelled', cancel_reason = ?, "
+                "resolved_at = ? WHERE id = ? AND status = 'pending'",
+                (db.mandate_version_status(row["case_id"], conn), db.now(), decision_id),
+            )
+            conn.commit()
+            raise DecisionNotPending(f"decision request {decision_id} is cancelled")
 
-    # Security invariant: the holder identity is literal SQL, never caller-controlled.
-    conn.execute(
-        "UPDATE decision_request SET answer_es = ?, answer_en = ?, status = 'resolved', "
-        "decided_by = 'holder', latency_ms = ?, resolved_at = ? WHERE id = ?",
-        (
-            db.redact(answer_es),
-            db.redact(answer_en),
-            latency_ms,
-            db.now(),
-            decision_id,
-        ),
-    )
-    conn.commit()
-    db.set_case_state(row["case_id"], "representing")
+        # Security invariant: the holder identity is literal SQL, never caller-controlled.
+        # The status guard in WHERE makes resolution single-winner under concurrency.
+        cursor = conn.execute(
+            "UPDATE decision_request SET answer_es = ?, answer_en = ?, status = 'resolved', "
+            "decided_by = 'holder', latency_ms = ?, resolved_at = ? "
+            "WHERE id = ? AND status = 'pending'",
+            (
+                db.redact(answer_es),
+                db.redact(answer_en),
+                latency_ms,
+                db.now(),
+                decision_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise DecisionNotPending(
+                f"decision request {decision_id} is already {row['status']}"
+            )
+        conn.execute(
+            "UPDATE kase SET state = 'representing' WHERE id = ? "
+            "AND state NOT IN ('closed', 'interrupted')",
+            (row["case_id"],),
+        )
+        conn.commit()
+    except BaseException:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
 
 
 def to_plain_spanish(question_en: str) -> str:

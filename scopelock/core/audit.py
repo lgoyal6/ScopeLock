@@ -62,6 +62,36 @@ def _event(
     )
 
 
+def insert_event(
+    conn: sqlite3.Connection,
+    *,
+    case_id: str,
+    verb: str,
+    disposition: str,
+    source: str,
+    trigger_redacted: str | None,
+    result: str,
+) -> str:
+    """Insert one redacted policy event inside the caller's open transaction (no commit)."""
+    event_id = db.new_id("evt")
+    conn.execute(
+        "INSERT INTO policy_event "
+        "(id, case_id, verb, disposition, source, trigger_redacted, result, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            event_id,
+            case_id,
+            verb,
+            disposition,
+            source,
+            redact(trigger_redacted) if trigger_redacted is not None else None,
+            redact(result),
+            db.now(),
+        ),
+    )
+    return event_id
+
+
 def record_event(
     case_id: str,
     verb: str,
@@ -236,3 +266,48 @@ def get_audit_report(case_id: str) -> list[dict]:
         )
 
     return sorted(events, key=lambda event: (event["created_at"], event["id"]))
+
+
+_EVENT_BUCKETS = (
+    "allowed",
+    "holder_decision_required",
+    "blocked",
+    "effect_committed",
+    "effect_duplicate",
+    "effect_refused",
+    "mandate_revoked",
+)
+
+
+def authz_metrics() -> dict:
+    """Process-independent counters read from SQLite. Every key is from a fixed set, so
+    cardinality is bounded and no case ID, utterance or reason text can appear."""
+    conn = db.connect()
+    events = {bucket: 0 for bucket in _EVENT_BUCKETS}
+    for row in conn.execute("SELECT verb, result, COUNT(*) AS n FROM policy_event GROUP BY verb, result"):
+        if row["verb"] == "mandate_revoked":
+            events["mandate_revoked"] += row["n"]
+            continue
+        bucket = str(row["result"]).split(":", 1)[0]
+        if bucket in events:
+            events[bucket] += row["n"]
+    decisions = {state: 0 for state in ("pending", "resolved", "cancelled", "abandoned")}
+    for row in conn.execute("SELECT status, COUNT(*) AS n FROM decision_request GROUP BY status"):
+        if row["status"] in decisions:
+            decisions[row["status"]] = row["n"]
+    versions = {"active": 0, "revoked": 0, "expired": 0}
+    now = db.epoch()
+    for row in conn.execute("SELECT expires_at, revoked_at FROM mandate_version"):
+        if row["revoked_at"] is not None:
+            versions["revoked"] += 1
+        elif row["expires_at"] is not None and now >= row["expires_at"]:
+            versions["expired"] += 1
+        else:
+            versions["active"] += 1
+    effects = conn.execute("SELECT COUNT(*) FROM action_effect").fetchone()[0]
+    return {
+        "policy_events": events,
+        "decision_requests": decisions,
+        "mandate_versions": versions,
+        "effects": effects,
+    }

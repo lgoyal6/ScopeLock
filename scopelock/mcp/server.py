@@ -24,6 +24,8 @@ from scopelock.mcp.schemas import (
     ActiveCaseOutput,
     AuditEventOutput,
     AuditReportOutput,
+    AuthorizeEffectInput,
+    AuthorizeEffectOutput,
     CallbackCardOutput,
     EvaluateActionInput,
     EvaluateActionOutput,
@@ -39,6 +41,8 @@ from scopelock.mcp.schemas import (
     ResolveHolderDecisionOutput,
     RestrictActionInput,
     RestrictActionOutput,
+    RevokeMandateInput,
+    RevokeMandateOutput,
     RunSafetyScenarioInput,
     RunSafetyScenarioOutput,
     SafetyOutcome,
@@ -129,6 +133,24 @@ def _throwaway_case_copy(case_id: str) -> Iterator[str]:
             f'INSERT INTO mandate_rule ({mandate_columns_sql}) VALUES ({mandate_placeholders})',
             values,
         )
+    version_columns = [row[1] for row in conn.execute("PRAGMA table_info(mandate_version)")]
+    version_columns_sql = ", ".join(f'"{column}"' for column in version_columns)
+    version_placeholders = ", ".join("?" for _ in version_columns)
+    for source_version in conn.execute(
+        "SELECT * FROM mandate_version WHERE case_id = ?", (case_id,)
+    ).fetchall():
+        values = []
+        for column in version_columns:
+            if column == "id":
+                values.append(db.new_id("mv"))
+            elif column == "case_id":
+                values.append(throwaway_id)
+            else:
+                values.append(source_version[column])
+        conn.execute(
+            f'INSERT INTO mandate_version ({version_columns_sql}) VALUES ({version_placeholders})',
+            values,
+        )
     conn.commit()
 
     try:
@@ -211,6 +233,50 @@ def restrict_action(case_id: str, verb: str) -> RestrictActionOutput:
         verb=request.verb,
         disposition="forbidden",
     )
+
+
+@server.tool(structured_output=True)
+def revoke_mandate(case_id: str, reason: str) -> RevokeMandateOutput:
+    """Withdraw the live mandate across every open session; never grants authority."""
+    request = _validate(RevokeMandateInput, case_id=case_id, reason=reason)
+    if db.get_case(request.case_id) is None:
+        raise ToolError("Case not found.")
+    try:
+        result = PolicyService().revoke_mandate(request.case_id, request.reason, source="mcp")
+    except Exception:
+        raise ToolError("Revocation failed.") from None
+    return RevokeMandateOutput(case_id=request.case_id, **asdict(result))
+
+
+@server.tool(structured_output=True)
+def authorize_effect(
+    case_id: str,
+    verb: str,
+    trigger: str,
+    idempotency_key: str,
+    decision_request_id: str | None = None,
+) -> AuthorizeEffectOutput:
+    """Authorize one state-changing action and record its effect exactly once."""
+    request = _validate(
+        AuthorizeEffectInput,
+        case_id=case_id,
+        verb=verb,
+        trigger=trigger,
+        idempotency_key=idempotency_key,
+        decision_request_id=decision_request_id,
+    )
+    try:
+        result = PolicyService().authorize_effect(
+            request.case_id,
+            request.verb,
+            request.trigger,
+            source="mcp",
+            idempotency_key=request.idempotency_key,
+            decision_request_id=request.decision_request_id,
+        )
+    except Exception:
+        raise ToolError("Effect authorization failed.") from None
+    return AuthorizeEffectOutput.model_validate(asdict(result))
 
 
 @server.tool(structured_output=True)

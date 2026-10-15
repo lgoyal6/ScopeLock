@@ -77,6 +77,8 @@ def test_registers_all_named_tools_and_only_redacted_resources():
         "get_callback_card",
         "get_audit_report",
         "run_safety_scenario",
+        "revoke_mandate",
+        "authorize_effect",
     }
     assert {template.uri_template for template in templates} == {
         "case://{case_id}/mandate",

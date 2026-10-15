@@ -103,6 +103,42 @@ CREATE TABLE IF NOT EXISTS utterance (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS authz_seq (
+  seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+  case_id    TEXT NOT NULL,
+  kind       TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS mandate_version (
+  id            TEXT PRIMARY KEY,
+  case_id       TEXT NOT NULL REFERENCES kase(id),
+  version       INTEGER NOT NULL,
+  rules_json    TEXT NOT NULL,
+  confirmed_at  REAL NOT NULL,
+  expires_at    REAL,
+  created_seq   INTEGER NOT NULL,
+  revoked_at    REAL,
+  revoked_seq   INTEGER,
+  revoke_reason TEXT,
+  UNIQUE(case_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS action_effect (
+  id                  TEXT PRIMARY KEY,
+  case_id             TEXT NOT NULL REFERENCES kase(id),
+  verb                TEXT NOT NULL,
+  mandate_version     INTEGER NOT NULL,
+  idempotency_key     TEXT NOT NULL,
+  decision_request_id TEXT UNIQUE,
+  source              TEXT NOT NULL,
+  trigger_redacted    TEXT,
+  correlation_id      TEXT,
+  seq                 INTEGER NOT NULL,
+  created_at          TEXT NOT NULL,
+  UNIQUE(case_id, idempotency_key)
+);
+
 CREATE TABLE IF NOT EXISTS card (
   case_id      TEXT PRIMARY KEY REFERENCES kase(id),
   asked        TEXT NOT NULL,
@@ -114,6 +150,40 @@ CREATE TABLE IF NOT EXISTS card (
   created_at   TEXT NOT NULL
 );
 """
+
+
+# Columns added after the original schema shipped. ``CREATE TABLE IF NOT EXISTS`` does not
+# alter an existing file, so connect() adds any that are missing (additive, idempotent).
+_ADDED_COLUMNS = {
+    "decision_request": {
+        "cancel_reason": "TEXT",
+        "created_seq": "INTEGER",
+    },
+}
+
+# Injectable wall clock for mandate expiry; tests monkeypatch this.
+_clock = time.time
+
+
+def epoch() -> float:
+    return float(_clock())
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, columns in _ADDED_COLUMNS.items():
+        present = {row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')}
+        for column, decl in columns.items():
+            if column not in present:
+                conn.execute(f'ALTER TABLE "{table}" ADD COLUMN {column} {decl}')
+
+
+def next_seq(conn: sqlite3.Connection, case_id: str, kind: str) -> int:
+    """Allocate a monotonic ledger sequence number inside the caller's transaction."""
+    cursor = conn.execute(
+        "INSERT INTO authz_seq (case_id, kind, created_at) VALUES (?, ?, ?)",
+        (case_id, kind, now()),
+    )
+    return int(cursor.lastrowid)
 
 
 def new_id(prefix: str) -> str:
@@ -130,7 +200,9 @@ def connect() -> sqlite3.Connection:
         conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=10000")
         conn.executescript(SCHEMA)
+        _migrate(conn)
         conn.commit()
         _local.conn = conn
     return conn
@@ -241,9 +313,36 @@ def confirm_mandate(case_id: str, utterance: str) -> None:
     conn.commit()
 
 
+def latest_mandate_version(case_id: str,
+                           conn: sqlite3.Connection | None = None) -> sqlite3.Row | None:
+    return (conn or connect()).execute(
+        "SELECT * FROM mandate_version WHERE case_id = ? ORDER BY version DESC LIMIT 1",
+        (case_id,),
+    ).fetchone()
+
+
+def mandate_version_status(case_id: str, conn: sqlite3.Connection | None = None) -> str:
+    """'none' (never confirmed), 'active', 'revoked' or 'expired' for the latest version."""
+    row = latest_mandate_version(case_id, conn)
+    if row is None:
+        return "none"
+    if row["revoked_at"] is not None:
+        return "revoked"
+    if row["expires_at"] is not None and epoch() >= row["expires_at"]:
+        return "expired"
+    return "active"
+
+
 def mandate_confirmed(case_id: str) -> bool:
+    """Confirmed means every rule was confirmed aloud AND the confirmed version is live.
+
+    A revoked or expired version no longer counts, so the relay gate and health checks
+    close with it.
+    """
     rows = mandate_rules(case_id)
-    return bool(rows) and all(r["confirmed_by_holder"] for r in rows)
+    if not (bool(rows) and all(r["confirmed_by_holder"] for r in rows)):
+        return False
+    return mandate_version_status(case_id) in ("none", "active")
 
 
 def log_violation(case_id: str, verb: str, trigger: str) -> None:
@@ -368,6 +467,10 @@ def reset_db() -> None:
         DROP TABLE IF EXISTS violation;
         DROP TABLE IF EXISTS utterance;
         DROP TABLE IF EXISTS card;
+        DROP TABLE IF EXISTS authz_seq;
+        DROP TABLE IF EXISTS mandate_version;
+        DROP TABLE IF EXISTS action_effect;
     """)
     conn.executescript(SCHEMA)
+    _migrate(conn)
     conn.commit()

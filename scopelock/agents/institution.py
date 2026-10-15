@@ -236,6 +236,39 @@ def on_escalate(call: guava.Call):
     _open_consult(call, case_id, "The representative offered to escalate this to a supervisor. Does she want that?")
 
 
+def commit_holder_decision(case_id: str, decision_id: str, answer_en: str) -> bool:
+    """Record the effect her resolved answer authorizes. Returns True if authority was
+    withdrawn (revoked/expired) before the effect could be written.
+
+    A 'no' answer is not withdrawal: it is relayed as her answer and writes no effect.
+    The decision id is the idempotency key, so a duplicate callback cannot act twice.
+    """
+    from scopelock.core.policy import PolicyService
+
+    row = db.connect().execute(
+        "SELECT verb FROM decision_request WHERE id = ?", (decision_id,)
+    ).fetchone()
+    if row is None:
+        return True
+    result = PolicyService().authorize_effect(
+        case_id,
+        row["verb"],
+        answer_en,
+        source="institution_agent",
+        idempotency_key=f"decision:{decision_id}",
+        decision_request_id=decision_id,
+    )
+    return result.status == "refused" and result.reason in ("revoked", "expired", "not_confirmed")
+
+
+def report_authority_withdrawn(call: guava.Call) -> None:
+    call.read_script(scripts.REFUSAL_WITHDRAWN)
+    call.hangup(
+        "Thank the representative, say the account holder will call back, and end the "
+        "call politely. Do not agree to anything."
+    )
+
+
 def resume_after_consult(call: guava.Call, answer_en: str) -> None:
     """Called from the household leg once her answer comes back. One-directional
     dependency: household.py imports this; institution.py never imports household.py."""
