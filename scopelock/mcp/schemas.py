@@ -167,3 +167,33 @@ class SafetyOutcome(StrictModel):
 class RunSafetyScenarioOutput(StrictModel):
     case_id: Identifier
     outcomes: list[SafetyOutcome]
+
+
+class RevokeMandateInput(StrictModel):
+    case_id: Identifier
+    reason: NonEmptyText
+
+
+class RevokeMandateOutput(StrictModel):
+    case_id: Identifier
+    revoked: bool
+    version: int | None
+    cancelled_decisions: int
+    audit_event_id: Identifier
+
+
+class AuthorizeEffectInput(StrictModel):
+    case_id: Identifier
+    verb: Verb
+    trigger: NonEmptyText
+    idempotency_key: Identifier
+    decision_request_id: Identifier | None = None
+
+
+class AuthorizeEffectOutput(StrictModel):
+    status: Literal["committed", "duplicate", "refused"]
+    reason: str | None
+    effect_id: str | None
+    seq: int | None
+    mandate_version: int | None
+    audit_event_id: Identifier

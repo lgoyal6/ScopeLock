@@ -170,11 +170,20 @@ def on_consult_answered(call: guava.Call):
     case_id = call.get_variable("case_id")
     answer_es = call.get_field("consult_answer")
     answer_en = translate.translate(answer_es, "english")
-    consult.complete(case_id, answer_es, answer_en)
-
     inst_call = relay.institution_call(case_id)
+    try:
+        decision_id = consult.complete(case_id, answer_es, answer_en)
+        withdrawn = institution.commit_holder_decision(case_id, decision_id, answer_en)
+    except consult.DecisionNotPending:
+        # Revoked, expired or cancelled while she was answering: her answer authorizes
+        # nothing, and the representative hears that once instead of waiting in silence.
+        withdrawn = True
+
     if inst_call is not None:
-        institution.resume_after_consult(inst_call, answer_en)
+        if withdrawn:
+            institution.report_authority_withdrawn(inst_call)
+        else:
+            institution.resume_after_consult(inst_call, answer_en)
 
     call.set_task(
         "waiting",

@@ -1,17 +1,28 @@
-"""C6 backend. One endpoint, polled every 400ms by the console. No auth, no deployment
-scope per spec 1.2 — this is a demo-night console, not a product."""
+"""Serve local console status and case-scoped authorization endpoints.
+Read-only console routes are unauthenticated; mutations use case capabilities.
+PolicyService and db.py enforce mandate state without claiming caller identity.
+"""
 from __future__ import annotations
 
+import hashlib
+import hmac
 import importlib
 import importlib.util
 import os
+import re
+import uuid
+from dataclasses import asdict
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field
 
 from scopelock.core import audit, card, db
+from scopelock.core.policy import PolicyService
 from scopelock.core.mandate import ALLOWED_ACTIONS, FORBIDDEN_ACTIONS
 from scopelock.core.redact import redact
 
@@ -155,8 +166,7 @@ def health():
     active_case_ready = bool(case and case.get("state") != "closed")
     mandate_confirmed = False
     if database_ready and active_case_ready and case is not None:
-        rows = db.mandate_rules(case["id"])
-        mandate_confirmed = bool(rows) and all(row["confirmed_by_holder"] for row in rows)
+        mandate_confirmed = db.mandate_confirmed(case["id"])
 
     phone_numbers = {
         "household_configured": bool(os.environ.get("HOUSEHOLD_NUMBER")),
@@ -213,6 +223,125 @@ def case_report(case_id: str):
             "readback_es": card.build_readback_es(case_id),
         }
     )
+
+
+# ---- Authorization API ---------------------------------------------------------------
+# The console routes above are read-only. These routes change authorization state, so they
+# are closed unless SCOPELOCK_API_TOKEN is set, and then require it as a bearer token.
+# Revocation only removes authority; effects pass through the same PolicyService gate as
+# MCP and the voice legs. Error bodies never echo request text.
+
+_CORRELATION_ID = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
+class _Body(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class EvaluateBody(_Body):
+    verb: str = Field(min_length=1, max_length=128)
+    trigger: str = Field(min_length=1, max_length=4096)
+
+
+class EffectBody(_Body):
+    verb: str = Field(min_length=1, max_length=128)
+    trigger: str = Field(min_length=1, max_length=4096)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    decision_request_id: str | None = Field(default=None, max_length=128)
+
+
+class RevokeBody(_Body):
+    reason: str = Field(min_length=1, max_length=4096)
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """FastAPI's default 422 body echoes the submitted values, which can carry an SSN or
+    member ID. Report only which fields failed and why, never their contents."""
+    return JSONResponse(
+        status_code=422,
+        content={"detail": [
+            {"loc": [str(part) for part in error.get("loc", ())], "type": error.get("type")}
+            for error in exc.errors()
+        ]},
+    )
+
+
+def case_token(case_id: str, secret: str | None = None) -> str:
+    """Case-scoped bearer capability: HMAC-SHA256(server secret, case ID).
+
+    The operator mints one per case from SCOPELOCK_API_TOKEN; a token for one case is
+    useless on another, and the raw server secret is never accepted as a bearer token.
+    This is a service-to-service capability, not proof of the holder's identity.
+    """
+    secret = os.environ.get("SCOPELOCK_API_TOKEN", "") if secret is None else secret
+    if not secret:
+        raise ValueError("SCOPELOCK_API_TOKEN is not set")
+    return hmac.new(secret.encode(), f"scopelock-case:{case_id}".encode(), hashlib.sha256).hexdigest()
+
+
+def _require_token(authorization: str | None, case_id: str) -> None:
+    if not os.environ.get("SCOPELOCK_API_TOKEN", ""):
+        raise HTTPException(status_code=403, detail="Authorization API is disabled")
+    supplied = (authorization or "").removeprefix("Bearer ").strip()
+    if not hmac.compare_digest(supplied.encode(), case_token(case_id).encode()):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+
+def _correlation(response: Response, supplied: str | None) -> str:
+    value = supplied if supplied and _CORRELATION_ID.match(supplied) else uuid.uuid4().hex
+    response.headers["X-Correlation-ID"] = value
+    return value
+
+
+def _require_case(case_id: str) -> None:
+    if db.get_case(case_id) is None:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+
+@app.post("/api/cases/{case_id}/evaluate")
+def api_evaluate(case_id: str, body: EvaluateBody, response: Response,
+                 authorization: str | None = Header(default=None),
+                 x_correlation_id: str | None = Header(default=None)):
+    _require_token(authorization, case_id)
+    _correlation(response, x_correlation_id)
+    _require_case(case_id)
+    return asdict(PolicyService().evaluate_action(case_id, body.verb, body.trigger, source="api"))
+
+
+@app.post("/api/cases/{case_id}/effects")
+def api_authorize_effect(case_id: str, body: EffectBody, response: Response,
+                         authorization: str | None = Header(default=None),
+                         x_correlation_id: str | None = Header(default=None)):
+    _require_token(authorization, case_id)
+    correlation_id = _correlation(response, x_correlation_id)
+    _require_case(case_id)
+    result = PolicyService().authorize_effect(
+        case_id,
+        body.verb,
+        body.trigger,
+        source="api",
+        idempotency_key=body.idempotency_key,
+        decision_request_id=body.decision_request_id,
+        correlation_id=correlation_id,
+    )
+    return asdict(result)
+
+
+@app.post("/api/cases/{case_id}/revoke")
+def api_revoke(case_id: str, body: RevokeBody, response: Response,
+               authorization: str | None = Header(default=None),
+               x_correlation_id: str | None = Header(default=None)):
+    _require_token(authorization, case_id)
+    _correlation(response, x_correlation_id)
+    _require_case(case_id)
+    return asdict(PolicyService().revoke_mandate(case_id, body.reason, source="api"))
+
+
+@app.get("/api/metrics")
+def metrics():
+    """Bounded counters only: fixed keys, no case IDs, no free text."""
+    return audit.authz_metrics()
 
 
 app.mount("/", StaticFiles(directory="scopelock/console", html=True), name="console")

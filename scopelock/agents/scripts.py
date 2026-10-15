@@ -67,4 +67,9 @@ REFUSAL = {
     ),
 }
 
+REFUSAL_WITHDRAWN = (
+    "The account holder's authorization for this call is no longer active, so I can't "
+    "act on that. I can take a reference number and have her call back."
+)
+
 CARD_READBACK_INTRO_ES = "Esto es lo que pasó en la llamada:"
