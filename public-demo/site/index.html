@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Run a bounded synthetic action through the ScopeLock policy engine.">
+    <title>ScopeLock | Policy check</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <main class="page">
+      <header class="topbar">
+        <a href="https://github.com/lgoyal6/ScopeLock" target="_blank" rel="noopener noreferrer">GitHub</a>
+        <a class="wordmark" href="/" aria-label="ScopeLock policy check">ScopeLock</a>
+        <span class="topbar-note">A small policy check for consequential actions</span>
+      </header>
+
+      <section class="intro">
+        <p class="kicker">Synthetic policy run</p>
+        <h1>Help a Spanish-speaking holder stay in control.</h1>
+        <p class="lede">Confirm a narrow mandate in Spanish, inspect the representative’s request in English, then decide what the advocate may relay. The original policy and holder-decision code enforce the result.</p>
+      </section>
+
+      <div class="notice" role="note">
+        This demo uses fixed fictional scenarios. It contacts no institution, discloses no personal data, and performs no external action. Temporary authorization records are deleted after each run.
+      </div>
+
+      <section class="workbench" aria-label="ScopeLock policy workbench">
+        <article class="mandate panel">
+          <h2>1. Holder confirms the mandate</h2><p lang="es">Sí, estoy de acuerdo. Puede pedir información. Antes de cambiar mi cita, pregúnteme. No acepte pagos ni comparta mi número de Seguro Social.</p><p class="small-note">Fixed fictional Spanish instruction, confirmed as immutable mandate version 1.</p>
+          <p class="panel-intro">The fictional holder has a narrow set of permissions.</p>
+          <dl class="rule-list">
+            <div><dt><span class="rule-mark allowed"></span>Allowed</dt><dd>Ask why something happened, request a reference, or request written details.</dd></div>
+            <div><dt><span class="rule-mark review"></span>Ask the holder</dt><dd>Reschedule an appointment or request a supervisor.</dd></div>
+            <div><dt><span class="rule-mark blocked"></span>Blocked</dt><dd>Agree to payments, accept a settlement, change coverage, or share an identity number.</dd></div>
+          </dl>
+          <p class="small-note">This is a synthetic policy fixture, not a real person's confirmed instructions.</p>
+        </article>
+
+        <article class="runner panel">
+          <h2>2. Representative proposes an action</h2>
+          <label for="scenario">Choose a scenario</label>
+          <select id="scenario" name="scenario">
+            <option value="reference">Request a call reference number</option>
+            <option value="appointment">Reschedule an appointment</option>
+            <option value="payment">Agree to a payment plan</option>
+            <option value="identifier">Share a Social Security number</option>
+          </select>
+          <label for="holder-answer">3. Fictional holder response</label><select id="holder-answer"><option value="pending">Wait for the holder</option><option value="approve">Sí, de acuerdo. / Yes, I agree.</option><option value="decline">No, no cambie la cita. / No, do not change it.</option><option value="revoke">Withdraw the mandate before execution</option></select><button id="run-check" type="button">Run policy check</button>
+          <p class="small-note">The selection sends only a scenario ID to this site. Responses are fixed bilingual examples, not live translation.</p>
+
+          <section id="result" class="receipt" aria-live="polite" aria-atomic="true">
+            <p class="receipt-label">Engine decision</p>
+            <h3 id="decision">Waiting for a request</h3>
+            <p id="explanation">Choose a scenario and run the policy check to see the result.</p>
+            <p id="effect-status" class="effect-status"></p>
+          </section>
+          <p id="error" class="error" role="alert" hidden></p>
+        </article>
+      </section>
+
+      <footer>
+        <span>Local SQLite authorization only. No voice provider or institution connected.</span>
+        <a href="https://github.com/lgoyal6/ScopeLock">View source</a>
+      </footer>
+    </main>
+  </body>
+</html>
