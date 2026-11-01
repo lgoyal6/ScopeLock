@@ -1,0 +1,76 @@
+:root {
+  color-scheme: light;
+  --canvas: #e9f0f1;
+  --panel: #fbfdfc;
+  --ink: #16323a;
+  --muted: #526970;
+  --line: #c8d6d8;
+  --green: #176b53;
+  --green-wash: #e2f2eb;
+  --amber: #8a5b12;
+  --amber-wash: #fff3d7;
+  --red: #a43e35;
+  --red-wash: #ffebe7;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink);
+  font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.page { width: min(1060px, calc(100% - 36px)); margin: 0 auto; padding: 26px 0 42px; }
+.topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); padding-bottom: 16px; }
+.wordmark { color: var(--ink); font-size: 20px; font-weight: 800; letter-spacing: -0.04em; text-decoration: none; }
+.topbar-note, .small-note, footer { color: var(--muted); font-size: 13px; }
+.intro { max-width: 760px; padding: 38px 0 22px; }
+.kicker { margin: 0 0 7px; color: var(--green); font-size: 13px; font-weight: 750; }
+h1 { max-width: 700px; margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: clamp(36px, 6vw, 58px); font-weight: 500; letter-spacing: -0.045em; line-height: 1.03; }
+.lede { max-width: 660px; margin: 14px 0 0; color: var(--muted); font-size: 18px; }
+.notice { border-left: 4px solid var(--amber); background: var(--amber-wash); padding: 12px 15px; color: #5d471c; font-size: 14px; }
+.workbench { display: grid; grid-template-columns: 0.9fr 1.1fr; gap: 16px; margin-top: 18px; align-items: start; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 22px; }
+h2 { margin: 0; font-size: 19px; letter-spacing: -0.02em; }
+.panel-intro { margin: 5px 0 18px; color: var(--muted); font-size: 14px; }
+.rule-list { margin: 0; }
+.rule-list div { display: grid; grid-template-columns: 132px 1fr; gap: 10px; padding: 13px 0; border-top: 1px solid var(--line); }
+.rule-list dt { display: flex; align-items: flex-start; gap: 8px; font-weight: 750; }
+.rule-list dd { margin: 0; color: var(--muted); font-size: 14px; }
+.rule-mark { width: 9px; height: 9px; flex: 0 0 9px; margin-top: 7px; border-radius: 50%; background: currentColor; }
+.rule-mark.allowed { color: var(--green); }
+.rule-mark.review { color: var(--amber); }
+.rule-mark.blocked { color: var(--red); }
+.small-note { margin: 16px 0 0; }
+.runner label { display: block; margin: 18px 0 6px; font-weight: 700; }
+select, button { width: 100%; min-height: 46px; border-radius: 4px; font: inherit; }
+select { border: 1px solid #9eb2b5; background: #fff; color: var(--ink); padding: 9px 11px; }
+button { margin-top: 10px; border: 0; background: var(--ink); color: #fff; font-weight: 750; cursor: pointer; }
+button:hover { background: #244d56; }
+button:disabled { cursor: wait; opacity: 0.7; }
+select:focus-visible, button:focus-visible, a:focus-visible { outline: 3px solid #498b83; outline-offset: 3px; }
+.receipt { min-height: 166px; margin-top: 22px; border: 1px solid var(--line); border-top: 4px solid #82979c; padding: 15px; background: #f4f8f7; }
+.receipt.allowed { border-top-color: var(--green); background: var(--green-wash); }
+.receipt.requires_holder { border-top-color: var(--amber); background: var(--amber-wash); }
+.receipt.forbidden { border-top-color: var(--red); background: var(--red-wash); }
+.receipt-label { margin: 0 0 3px; color: var(--muted); font-size: 12px; font-weight: 750; }
+.receipt h3 { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: 25px; font-weight: 500; }
+.receipt p:not(.receipt-label) { margin: 5px 0 0; }
+.effect-status { font-size: 13px; font-weight: 700; }
+.error { margin: 12px 0 0; color: var(--red); font-weight: 700; }
+footer { display: flex; justify-content: space-between; gap: 16px; margin-top: 22px; padding-top: 14px; border-top: 1px solid var(--line); }
+footer a { color: var(--green); font-weight: 700; }
+
+@media (max-width: 720px) {
+  .page { width: min(100% - 24px, 560px); padding-top: 17px; }
+  .topbar { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .intro { padding-top: 30px; }
+  .workbench { grid-template-columns: 1fr; }
+  .panel { padding: 18px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; }
+}

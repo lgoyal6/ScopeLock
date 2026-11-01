@@ -1,7 +1,7 @@
 """Holder decision lifecycle and live-call compatibility coordination."""
 from __future__ import annotations
 
-from scopelock.core import db, relay, translate
+from scopelock.core import db, relay
 
 # case_id -> pending live-call metadata. Persistence lives only in decision_request.
 PENDING: dict[str, dict] = {}
@@ -144,6 +144,8 @@ def resolve_holder_decision(decision_id: str, answer_es: str, answer_en: str,
 
 def to_plain_spanish(question_en: str) -> str:
     """Render the representative's question plainly, without institution jargon."""
+    from scopelock.core import translate
+
     return translate.translate(
         f"In plain, simple language, not insurance jargon: {question_en}", "spanish"
     )
@@ -180,7 +182,12 @@ def complete(case_id: str, answer_es: str, answer_en: str | None = None) -> str:
     entry = PENDING.pop(case_id, None)
     if entry is None:
         raise KeyError(f"case {case_id} has no pending holder decision")
-    rendered_en = answer_en or translate.translate(answer_es, "english")
+    if answer_en:
+        rendered_en = answer_en
+    else:
+        from scopelock.core import translate
+
+        rendered_en = translate.translate(answer_es, "english")
     resolve_holder_decision(
         entry["decision_id"],
         answer_es,
