@@ -17,6 +17,12 @@ reconciliation before such a claim is valid.
 The holder's Spanish answer must itself be affirmative. An English translation
 cannot turn a negative or uncertain answer into permission. A supplied conflicting
 translation also refuses. The bilingual trigger screen only removes authority.
+Consent uses a finite full-utterance grammar, not substring detection. Questions,
+conditional sentences, reported speech and unsupported trailing instructions do
+not confirm a mandate or authorize a holder-only effect. Supported explicit
+phrases and weekday confirmations are covered by offline regression cases;
+unrecognized phrasing requires a new explicit response. This conservative grammar
+does not establish general Spanish/English comprehension or speech recognition.
 Its bounded informational-question grammar distinguishes asking why an identifier
 is required from disclosing that identifier. Appended instructions, identifier
 values and explicitly forbidden typed actions still refuse. This is a finite

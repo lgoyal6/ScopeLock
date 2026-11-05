@@ -112,6 +112,11 @@ def _normalized_words(text: str) -> tuple[str, set[str]]:
 
 
 def _is_clear_affirmative(utterance: str) -> bool:
+    # Questions and conditionals must not gain authority merely by mentioning
+    # "yes" or the ambiguous Spanish token "si". This is a bounded consent
+    # grammar; unsupported phrasing needs a fresh explicit confirmation.
+    if any(mark in utterance for mark in ("?", "¿", '"', "“", "”")):
+        return False
     normalized, words = _normalized_words(utterance)
     if not normalized:
         return False
@@ -121,22 +126,13 @@ def _is_clear_affirmative(utterance: str) -> bool:
     if any(phrase in normalized for phrase in ("tal vez", "no se", "not sure", "it depends")):
         return False
 
-    affirmative_phrases = (
-        "si",
-        "yes",
-        "estoy de acuerdo",
-        "de acuerdo",
-        "confirmo",
-        "claro",
-        "vale",
-        "okay",
-        "ok",
-        "i agree",
-    )
-    return any(
-        re.search(rf"(?:^| ){re.escape(phrase)}(?: |$)", normalized)
-        for phrase in affirmative_phrases
-    )
+    agreement = r"(?:estoy de acuerdo|de acuerdo)(?: con eso)?"
+    spanish = rf"si(?: (?:claro|{agreement}|entiendo y {agreement}|el (?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)))?"
+    english = r"yes(?: (?:i agree|of course|absolutely|(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday) works))?"
+    return re.fullmatch(
+        rf"(?:{spanish}|{english}|{agreement}|confirmo|claro|vale|okay|ok|i agree)",
+        normalized,
+    ) is not None
 
 
 class PolicyService:
